@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import ProgressSteps from '../components/ProgressSteps';
 import Spinner from '../components/Spinner';
 import ErrorMessage from '../components/ErrorMessage';
@@ -25,8 +25,7 @@ export default function Diagnose() {
   const [sessionData, setSessionData] = useState(null);
 
   // Upload form state
-  const [imageFile, setImageFile] = useState(null);
-  const [imagePreview, setImagePreview] = useState(null);
+  const [imageFiles, setImageFiles] = useState([]);      // [{file, preview}]
   const [symptom, setSymptom] = useState('');
 
   // Reset everything
@@ -36,8 +35,7 @@ export default function Diagnose() {
     setError(null);
     setSessionId(null);
     setSessionData(null);
-    setImageFile(null);
-    setImagePreview(null);
+    setImageFiles([]);
     setSymptom('');
   }, []);
 
@@ -63,24 +61,51 @@ export default function Diagnose() {
 
   // --- Upload Phase ---
   function handleImageSelect(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setImageFile(file);
-    const reader = new FileReader();
-    reader.onloadend = () => setImagePreview(reader.result);
-    reader.readAsDataURL(file);
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    files.forEach(file => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setImageFiles(prev => {
+          if (prev.length >= 5) return prev;  // Max 5 photos
+          return [...prev, { file, preview: reader.result }];
+        });
+      };
+      reader.readAsDataURL(file);
+    });
+    // Reset the input so same files can be re-selected
+    e.target.value = '';
+  }
+
+  function handleRemoveImage(index) {
+    setImageFiles(prev => prev.filter((_, i) => i !== index));
   }
 
   async function handleStartDiagnosis() {
-    if (!imageFile) return;
+    if (imageFiles.length === 0) return;
     setLoading(true);
     setLoadingLabel('Identifying your device...');
     setError(null);
     try {
-      // Convert file to base64
-      const b64 = await fileToBase64(imageFile);
-      const mediaType = imageFile.type || 'image/jpeg';
-      const data = await api.startDiagnosis(b64, mediaType, symptom || null);
+      // Convert primary image
+      const primary = imageFiles[0];
+      const b64 = await fileToBase64(primary.file);
+      const mediaType = primary.file.type || 'image/jpeg';
+
+      // Convert additional images (if any)
+      let additionalImages = null;
+      if (imageFiles.length > 1) {
+        additionalImages = [];
+        for (const img of imageFiles.slice(1)) {
+          const extraB64 = await fileToBase64(img.file);
+          additionalImages.push({
+            image_base64: extraB64,
+            media_type: img.file.type || 'image/jpeg',
+          });
+        }
+      }
+
+      const data = await api.startDiagnosis(b64, mediaType, symptom || null, additionalImages);
       setSessionId(data.session_id);
       setSessionData(data);
       setPhase('identify');
@@ -154,12 +179,12 @@ export default function Diagnose() {
   }
 
   // --- Verify Phase ---
-  async function handleVerify(outcome) {
+  async function handleVerify(outcome, feedback = {}) {
     setLoading(true);
     setLoadingLabel('Recording your feedback...');
     setError(null);
     try {
-      await api.verifyFix(sessionId, outcome);
+      await api.verifyFix(sessionId, outcome, feedback);
       setPhase('verify');
     } catch (err) {
       setError(err.message);
@@ -190,12 +215,12 @@ export default function Diagnose() {
 
       {phase === 'upload' && (
         <UploadPhase
-          imagePreview={imagePreview}
+          imageFiles={imageFiles}
           symptom={symptom}
           onSymptomChange={setSymptom}
           onImageSelect={handleImageSelect}
+          onRemoveImage={handleRemoveImage}
           onStart={handleStartDiagnosis}
-          hasImage={!!imageFile}
         />
       )}
 
@@ -221,6 +246,7 @@ export default function Diagnose() {
       {phase === 'result' && sessionData && (
         <ResultPhase
           data={sessionData}
+          sessionId={sessionId}
           onVerify={handleVerify}
         />
       )}
@@ -234,46 +260,78 @@ export default function Diagnose() {
 
 // ─── Phase Components ─────────────────────────────────────────────────────────
 
-function UploadPhase({ imagePreview, symptom, onSymptomChange, onImageSelect, onStart, hasImage }) {
+function UploadPhase({ imageFiles, symptom, onSymptomChange, onImageSelect, onRemoveImage, onStart }) {
+  const hasImages = imageFiles.length > 0;
+  const canAddMore = imageFiles.length < 5;
+
   return (
     <div>
       <h1 className="text-2xl font-bold text-gray-900 mb-1">What needs fixing?</h1>
       <p className="text-gray-500 mb-6">
-        Take a photo of the broken device. Include the whole thing and any visible damage.
+        Take photos of the broken device. Multiple angles help — include the whole thing, any visible damage, and model/serial labels.
       </p>
 
-      {/* Image upload */}
-      <label className="block cursor-pointer mb-6">
-        <div className={`
-          border-2 border-dashed rounded-xl p-6 text-center transition-colors
-          ${imagePreview ? 'border-teal-300 bg-teal-50' : 'border-gray-300 hover:border-teal-400 hover:bg-gray-50'}
-        `}>
-          {imagePreview ? (
-            <img
-              src={imagePreview}
-              alt="Uploaded device"
-              className="max-h-64 mx-auto rounded-lg"
-            />
-          ) : (
-            <div className="py-8">
-              <svg className="w-12 h-12 mx-auto text-gray-400 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.5" aria-hidden="true">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z" />
-                <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0z" />
-              </svg>
-              <p className="text-gray-600 font-medium">Tap to take or choose a photo</p>
-              <p className="text-gray-400 text-sm mt-1">JPG, PNG, or WebP</p>
+      {/* Image grid */}
+      <div className="mb-6">
+        <div className={`grid gap-3 ${hasImages ? 'grid-cols-2 sm:grid-cols-3' : ''}`}>
+          {/* Existing images */}
+          {imageFiles.map((img, i) => (
+            <div key={i} className="relative group">
+              <img
+                src={img.preview}
+                alt={`Photo ${i + 1}`}
+                className="w-full h-32 object-cover rounded-lg border border-gray-200"
+              />
+              <button
+                onClick={() => onRemoveImage(i)}
+                className="absolute top-1 right-1 w-6 h-6 rounded-full bg-gray-800/70 text-white flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                aria-label={`Remove photo ${i + 1}`}
+              >
+                &times;
+              </button>
+              {i === 0 && (
+                <span className="absolute bottom-1 left-1 text-[10px] font-semibold bg-teal-600 text-white px-1.5 py-0.5 rounded">
+                  Primary
+                </span>
+              )}
             </div>
+          ))}
+
+          {/* Add photo button */}
+          {canAddMore && (
+            <label className="block cursor-pointer">
+              <div className={`
+                border-2 border-dashed rounded-lg text-center transition-colors flex flex-col items-center justify-center
+                ${hasImages ? 'h-32 border-gray-300 hover:border-teal-400 hover:bg-gray-50' : 'py-12 border-gray-300 hover:border-teal-400 hover:bg-gray-50'}
+              `}>
+                <svg className={`${hasImages ? 'w-8 h-8' : 'w-12 h-12'} text-gray-400 mb-2`} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="1.5" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0z" />
+                </svg>
+                {hasImages ? (
+                  <p className="text-gray-500 text-xs font-medium">Add another angle</p>
+                ) : (
+                  <>
+                    <p className="text-gray-600 font-medium">Tap to take or choose a photo</p>
+                    <p className="text-gray-400 text-sm mt-1">JPG, PNG, or WebP — up to 5 photos</p>
+                  </>
+                )}
+              </div>
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                multiple
+                onChange={onImageSelect}
+                className="sr-only"
+                aria-label="Upload photos of your device"
+              />
+            </label>
           )}
         </div>
-        <input
-          type="file"
-          accept="image/jpeg,image/png,image/webp"
-          capture="environment"
-          onChange={onImageSelect}
-          className="sr-only"
-          aria-label="Upload a photo of your device"
-        />
-      </label>
+        {hasImages && (
+          <p className="text-xs text-gray-400 mt-2">{imageFiles.length}/5 photos — more angles help with identification</p>
+        )}
+      </div>
 
       {/* Symptom input */}
       <div className="mb-6">
@@ -294,7 +352,7 @@ function UploadPhase({ imagePreview, symptom, onSymptomChange, onImageSelect, on
       {/* Submit */}
       <button
         onClick={onStart}
-        disabled={!hasImage}
+        disabled={!hasImages}
         className="w-full py-3.5 rounded-xl bg-teal-700 text-white font-semibold text-lg shadow-lg shadow-teal-700/20 hover:bg-teal-800 disabled:bg-gray-300 disabled:shadow-none disabled:cursor-not-allowed transition-colors"
       >
         Start diagnosis
@@ -307,6 +365,7 @@ function UploadPhase({ imagePreview, symptom, onSymptomChange, onImageSelect, on
 function IdentifyPhase({ data, onConfirm, onReject }) {
   const vision = data.vision_result || {};
   const confirmPrompt = data.confirm_prompt || 'Is this your device?';
+  const photoGuidance = data.photo_guidance || null;
   const confidence = Math.round((vision.confidence || 0) * 100);
   const brand = vision.brand_candidates?.[0] || 'Unknown';
   const model = vision.model_candidates?.[0] || '';
@@ -315,6 +374,22 @@ function IdentifyPhase({ data, onConfirm, onReject }) {
     <div>
       <h1 className="text-2xl font-bold text-gray-900 mb-1">Is this your device?</h1>
       <p className="text-gray-500 mb-6">{confirmPrompt}</p>
+
+      {/* Photo guidance — shown when model is ambiguous */}
+      {photoGuidance && (
+        <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg p-4">
+          <div className="flex items-start gap-2">
+            <svg className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+            <div>
+              <p className="text-sm font-medium text-amber-800">Want a more precise diagnosis?</p>
+              <p className="text-sm text-amber-700 mt-0.5">{photoGuidance}</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Product card */}
       <div className="bg-white rounded-xl border border-gray-200 p-5 mb-6">
@@ -451,6 +526,16 @@ function InterviewPhase({ data, onAnswer }) {
 
   return (
     <div>
+      {/* Research banner for unknown products */}
+      {data.is_known_product === false && (
+        <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+          <p className="text-sm text-blue-800">
+            <span className="font-semibold">New product!</span> This isn't in our database yet.
+            We researched common failures online to help diagnose it.
+          </p>
+        </div>
+      )}
+
       <div className="flex items-center justify-between mb-2">
         <h1 className="text-lg font-bold text-gray-900">Question {qNum} of {maxQ}</h1>
         {conf > 0 && (
@@ -538,14 +623,95 @@ function InterviewPhase({ data, onAnswer }) {
 }
 
 
-function ResultPhase({ data, onVerify }) {
+function ResultPhase({ data, sessionId, onVerify }) {
+  const [followUps, setFollowUps] = useState([]);
+  const [followUpText, setFollowUpText] = useState('');
+  const [followUpImage, setFollowUpImage] = useState(null);
+  const [followUpPreview, setFollowUpPreview] = useState(null);
+  const [followUpLoading, setFollowUpLoading] = useState(false);
+  const [followUpError, setFollowUpError] = useState(null);
+  const followUpRef = useRef(null);
+
+  // Feedback form state
+  const [selectedOutcome, setSelectedOutcome] = useState(null);
+  const [instructionQuality, setInstructionQuality] = useState('');
+  const [feedbackText, setFeedbackText] = useState('');
+  const [actualProblem, setActualProblem] = useState('');
+  const [userNotes, setUserNotes] = useState('');
+  const showFeedbackForm = selectedOutcome === 'not_fixed' || selectedOutcome === 'partially_fixed';
+
+  function handleOutcomeClick(outcome) {
+    if (outcome === 'fixed' || outcome === 'not_attempted' || outcome === 'scrapped') {
+      // For simple outcomes, go straight to notes prompt then submit
+      setSelectedOutcome(outcome);
+    } else {
+      // For not_fixed/partially_fixed, show the detailed feedback form
+      setSelectedOutcome(outcome);
+    }
+  }
+
+  function handleSubmitFeedback() {
+    const feedback = {
+      notes: userNotes || undefined,
+      instruction_quality: instructionQuality || undefined,
+      feedback_text: feedbackText || undefined,
+      actual_problem: actualProblem || undefined,
+    };
+    onVerify(selectedOutcome, feedback);
+  }
+
   const recommendation = data.recommendation || {};
   const safetyLevel = recommendation.safety_level || 'SAFE';
   const safetyWarnings = recommendation.safety_warnings || [];
   const fms = recommendation.failure_mechanisms || [];
   const fix = recommendation.recommended_fix;
   const parts = recommendation.parts_list || [];
+  const videos = recommendation.video_resources || [];
   const isProfessionalOnly = safetyLevel === 'PROFESSIONAL_ONLY';
+
+  function handleFollowUpImage(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFollowUpImage(file);
+    const reader = new FileReader();
+    reader.onload = () => setFollowUpPreview(reader.result);
+    reader.readAsDataURL(file);
+  }
+
+  function clearFollowUpImage() {
+    setFollowUpImage(null);
+    setFollowUpPreview(null);
+  }
+
+  async function handleAskFollowUp() {
+    if (!followUpText.trim()) return;
+    setFollowUpLoading(true);
+    setFollowUpError(null);
+
+    try {
+      let imageBase64 = null;
+      let mediaType = 'image/jpeg';
+      if (followUpImage) {
+        imageBase64 = await fileToBase64(followUpImage);
+        mediaType = followUpImage.type || 'image/jpeg';
+      }
+
+      const result = await api.askFollowUp(sessionId, followUpText, imageBase64, mediaType);
+
+      setFollowUps(prev => [...prev, {
+        question: followUpText,
+        imagePreview: followUpPreview,
+        response: result.follow_up_response,
+      }]);
+      setFollowUpText('');
+      setFollowUpImage(null);
+      setFollowUpPreview(null);
+    } catch (err) {
+      setFollowUpError(err.message);
+    } finally {
+      setFollowUpLoading(false);
+    }
+  }
 
   if (!recommendation || Object.keys(recommendation).length === 0) {
     return (
@@ -567,6 +733,16 @@ function ResultPhase({ data, onVerify }) {
   return (
     <div>
       <h1 className="text-2xl font-bold text-gray-900 mb-4">Here's what we found</h1>
+
+      {/* Research-based diagnosis banner */}
+      {data.is_known_product === false && (
+        <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+          <p className="text-sm text-blue-800">
+            This diagnosis was built from web research, not our verified database.
+            <span className="font-semibold"> Your feedback is especially valuable</span> for helping future users with this product.
+          </p>
+        </div>
+      )}
 
       {/* Safety badge — always first, always prominent */}
       <div className="mb-6">
@@ -684,30 +860,285 @@ function ResultPhase({ data, onVerify }) {
         </section>
       )}
 
+      {/* Video guides */}
+      {videos.length > 0 && !isProfessionalOnly && (
+        <section className="mb-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">Watch a repair video</h2>
+          <div className="space-y-2">
+            {videos.map((video, i) => (
+              <a
+                key={i}
+                href={video.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-3 bg-white rounded-lg border border-gray-200 p-3 hover:border-teal-300 hover:bg-teal-50 transition-colors group"
+              >
+                <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-red-100 flex items-center justify-center group-hover:bg-red-200 transition-colors">
+                  <svg className="w-5 h-5 text-red-600" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+                  </svg>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-900 truncate">{video.label}</p>
+                  <p className="text-xs text-gray-400">YouTube search</p>
+                </div>
+                <svg className="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                </svg>
+              </a>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Verification */}
-      <section className="border-t border-gray-200 pt-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-1">Did this fix it?</h2>
+      <section className="border-t border-gray-200 pt-6 mb-6">
+        <h2 className="text-lg font-semibold text-gray-900 mb-1">How's it going?</h2>
         <p className="text-sm text-gray-500 mb-4">
           Your feedback improves future diagnoses and helps others with the same problem.
         </p>
-        <div className="grid grid-cols-3 gap-3">
+
+        {!selectedOutcome ? (
+          /* Step 1: Outcome selection */
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              onClick={() => handleOutcomeClick('fixed')}
+              className="py-3 rounded-xl bg-safe text-white font-semibold hover:opacity-90 transition-opacity"
+            >
+              Fixed it!
+            </button>
+            <button
+              onClick={() => handleOutcomeClick('partially_fixed')}
+              className="py-3 rounded-xl bg-caution text-white font-semibold hover:opacity-90 transition-opacity"
+            >
+              Partially
+            </button>
+            <button
+              onClick={() => handleOutcomeClick('not_fixed')}
+              className="py-3 rounded-xl bg-white border border-gray-300 text-gray-700 font-semibold hover:bg-gray-50 transition-colors"
+            >
+              Didn't work
+            </button>
+            <button
+              onClick={() => {
+                followUpRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                setTimeout(() => {
+                  const input = followUpRef.current?.querySelector('input[type="text"]');
+                  input?.focus();
+                }, 400);
+              }}
+              className="py-3 rounded-xl bg-teal-50 border border-teal-300 text-teal-700 font-semibold hover:bg-teal-100 transition-colors"
+            >
+              I need more help
+            </button>
+          </div>
+        ) : (
+          /* Step 2: Feedback form */
+          <div className="space-y-4 bg-gray-50 rounded-xl p-4">
+            <div className="flex items-center justify-between">
+              <p className="font-medium text-gray-900">
+                {selectedOutcome === 'fixed' && 'Great!'}
+                {selectedOutcome === 'partially_fixed' && 'Almost there.'}
+                {selectedOutcome === 'not_fixed' && 'Sorry to hear that.'}
+                {selectedOutcome === 'not_attempted' && 'No worries.'}
+                {selectedOutcome === 'scrapped' && 'Got it.'}
+              </p>
+              <button
+                onClick={() => {
+                  setSelectedOutcome(null);
+                  setInstructionQuality('');
+                  setFeedbackText('');
+                  setActualProblem('');
+                  setUserNotes('');
+                }}
+                className="text-sm text-teal-600 hover:text-teal-800"
+              >
+                Change
+              </button>
+            </div>
+
+            {/* Instruction quality — only for not_fixed / partially_fixed */}
+            {showFeedbackForm && (
+              <>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    Were the instructions...
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      { value: 'accurate', label: 'Accurate' },
+                      { value: 'inaccurate_to_model', label: 'Wrong for my model' },
+                      { value: 'unclear', label: 'Hard to follow' },
+                      { value: 'incomplete', label: 'Missing steps' },
+                    ].map(opt => (
+                      <button
+                        key={opt.value}
+                        onClick={() => setInstructionQuality(opt.value)}
+                        className={`py-2 px-3 rounded-lg text-sm font-medium border transition-colors ${
+                          instructionQuality === opt.value
+                            ? 'border-teal-500 bg-teal-50 text-teal-700'
+                            : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    What would have made them clearer?
+                  </label>
+                  <input
+                    type="text"
+                    value={feedbackText}
+                    onChange={e => setFeedbackText(e.target.value)}
+                    placeholder="e.g. Step 3 said to remove screws, but my model uses clips"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                    maxLength={2000}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    What was actually wrong?
+                  </label>
+                  <input
+                    type="text"
+                    value={actualProblem}
+                    onChange={e => setActualProblem(e.target.value)}
+                    placeholder="e.g. It turned out to be a battery issue, not the screen"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                    maxLength={2000}
+                  />
+                </div>
+              </>
+            )}
+
+            {/* Tips for the next person — always shown */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                Tips for the next person? <span className="text-gray-400 font-normal">(optional)</span>
+              </label>
+              <input
+                type="text"
+                value={userNotes}
+                onChange={e => setUserNotes(e.target.value)}
+                placeholder="e.g. Watch out for the ribbon cable under the cover"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                maxLength={2000}
+              />
+            </div>
+
+            <button
+              onClick={handleSubmitFeedback}
+              className="w-full py-3 rounded-xl bg-teal-700 text-white font-semibold hover:bg-teal-800 transition-colors"
+            >
+              Submit feedback
+            </button>
+          </div>
+        )}
+      </section>
+
+      {/* Follow-up conversation thread */}
+      {followUps.length > 0 && (
+        <section className="mb-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">Follow-up</h2>
+          <div className="space-y-4">
+            {followUps.map((fu, i) => (
+              <div key={i} className="space-y-2">
+                {/* User message */}
+                <div className="flex justify-end">
+                  <div className="bg-teal-50 rounded-lg p-3 max-w-[85%]">
+                    {fu.imagePreview && (
+                      <img src={fu.imagePreview} alt="Uploaded" className="rounded-md mb-2 max-h-48 w-auto" />
+                    )}
+                    <p className="text-sm text-gray-900">{fu.question}</p>
+                  </div>
+                </div>
+                {/* FIY response */}
+                <div className="flex justify-start">
+                  <div className="bg-white border border-gray-200 rounded-lg p-3 max-w-[85%]">
+                    <p className="text-xs font-medium text-teal-600 mb-1">FIY</p>
+                    <div className="text-sm text-gray-700 prose prose-sm max-w-none whitespace-pre-line">
+                      {fu.response}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Follow-up input */}
+      <section ref={followUpRef} className="mb-6 border-t border-gray-200 pt-6">
+        <h2 className="text-lg font-semibold text-gray-900 mb-1">Ask a question</h2>
+        <p className="text-sm text-gray-500 mb-3">
+          Ask a follow-up question or upload a photo of what you're seeing.
+        </p>
+
+        {followUpError && (
+          <div className="mb-3">
+            <ErrorMessage message={followUpError} onRetry={() => setFollowUpError(null)} />
+          </div>
+        )}
+
+        {/* Photo preview */}
+        {followUpPreview && (
+          <div className="relative mb-3 inline-block">
+            <img src={followUpPreview} alt="Preview" className="rounded-lg max-h-40 w-auto border border-gray-200" />
+            <button
+              onClick={clearFollowUpImage}
+              className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-gray-700 text-white flex items-center justify-center text-xs hover:bg-gray-900"
+              aria-label="Remove photo"
+            >
+              &times;
+            </button>
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          {/* Photo upload button */}
+          <label className="flex-shrink-0 w-10 h-10 rounded-lg border border-gray-300 flex items-center justify-center cursor-pointer hover:bg-gray-50 transition-colors">
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              capture="environment"
+              onChange={handleFollowUpImage}
+              className="hidden"
+            />
+            <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+          </label>
+
+          {/* Text input */}
+          <input
+            type="text"
+            value={followUpText}
+            onChange={(e) => setFollowUpText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !followUpLoading) handleAskFollowUp(); }}
+            placeholder={followUpImage ? "What do you want to know about this photo?" : "Ask a follow-up question..."}
+            className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+            disabled={followUpLoading}
+            maxLength={2000}
+          />
+
+          {/* Send button */}
           <button
-            onClick={() => onVerify('fixed')}
-            className="py-3 rounded-xl bg-safe text-white font-semibold hover:opacity-90 transition-opacity"
+            onClick={handleAskFollowUp}
+            disabled={followUpLoading || !followUpText.trim()}
+            className="flex-shrink-0 px-4 py-2 rounded-lg bg-teal-700 text-white text-sm font-semibold hover:bg-teal-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Yes, fixed!
-          </button>
-          <button
-            onClick={() => onVerify('partially_fixed')}
-            className="py-3 rounded-xl bg-caution text-white font-semibold hover:opacity-90 transition-opacity"
-          >
-            Partially
-          </button>
-          <button
-            onClick={() => onVerify('not_fixed')}
-            className="py-3 rounded-xl bg-white border border-gray-300 text-gray-700 font-semibold hover:bg-gray-50 transition-colors"
-          >
-            No / Not tried
+            {followUpLoading ? (
+              <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            ) : 'Ask'}
           </button>
         </div>
       </section>

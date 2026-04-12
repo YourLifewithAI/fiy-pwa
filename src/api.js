@@ -33,19 +33,24 @@ async function request(path, options = {}) {
 
 /**
  * Start a new diagnostic session.
- * @param {string} imageBase64 - Base64-encoded JPEG/PNG
+ * @param {string} imageBase64 - Base64-encoded JPEG/PNG (primary image)
  * @param {string} mediaType - MIME type (image/jpeg, image/png, etc.)
  * @param {string|null} symptom - User's problem description
+ * @param {Array|null} additionalImages - [{image_base64, media_type}] additional photos
  * @returns {Promise<Object>} Session data with session_id, vision_result, confirm_prompt
  */
-export async function startDiagnosis(imageBase64, mediaType, symptom = null) {
+export async function startDiagnosis(imageBase64, mediaType, symptom = null, additionalImages = null) {
+  const body = {
+    image_base64: imageBase64,
+    media_type: mediaType,
+    initial_symptom: symptom || undefined,
+  };
+  if (additionalImages && additionalImages.length > 0) {
+    body.additional_images = additionalImages;
+  }
   return request('/diagnose', {
     method: 'POST',
-    body: JSON.stringify({
-      image_base64: imageBase64,
-      media_type: mediaType,
-      initial_symptom: symptom || undefined,
-    }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -63,16 +68,46 @@ export async function answerQuestion(sessionId, answer) {
 }
 
 /**
- * Submit fix verification.
+ * Submit fix verification with optional structured feedback.
  * @param {string} sessionId
  * @param {string} outcome - fixed|partially_fixed|not_fixed|not_attempted|scrapped
- * @param {string|null} notes
+ * @param {Object} feedback - { notes?, instruction_quality?, feedback_text?, actual_problem? }
  * @returns {Promise<Object>}
  */
-export async function verifyFix(sessionId, outcome, notes = null) {
+export async function verifyFix(sessionId, outcome, feedback = {}) {
+  const body = {
+    outcome,
+    notes: feedback.notes || undefined,
+    instruction_quality: feedback.instruction_quality || undefined,
+    feedback_text: feedback.feedback_text || undefined,
+    actual_problem: feedback.actual_problem || undefined,
+  };
   return request(`/fix_verify/${sessionId}`, {
     method: 'POST',
-    body: JSON.stringify({ outcome, notes: notes || undefined }),
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Ask a follow-up question (text or with photo) after diagnosis.
+ * @param {string} sessionId
+ * @param {string} question - The follow-up question text
+ * @param {string|null} imageBase64 - Optional base64-encoded image
+ * @param {string} mediaType - MIME type for the image
+ * @returns {Promise<Object>} { follow_up_response, follow_up_count, cost_cents }
+ */
+export async function askFollowUp(sessionId, question, imageBase64 = null, mediaType = 'image/jpeg') {
+  const body = {
+    answer_type: 'follow_up',
+    question,
+  };
+  if (imageBase64) {
+    body.image_base64 = imageBase64;
+    body.media_type = mediaType;
+  }
+  return request(`/diagnose/${sessionId}/answer`, {
+    method: 'POST',
+    body: JSON.stringify(body),
   });
 }
 
