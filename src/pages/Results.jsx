@@ -64,9 +64,13 @@ export default function Results() {
   }
 
   function handleShare() {
-    navigator.clipboard.writeText(window.location.href);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      navigator.clipboard.writeText(window.location.href);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      window.prompt('Copy this link:', window.location.href);
+    }
   }
 
   if (loading) return <Spinner label="Loading your diagnosis..." />;
