@@ -1,10 +1,12 @@
 import { useState, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import ProgressSteps from '../components/ProgressSteps';
 import Spinner from '../components/Spinner';
 import ErrorMessage from '../components/ErrorMessage';
 import SafetyBadge from '../components/SafetyBadge';
 import ConfidenceBar from '../components/ConfidenceBar';
 import * as api from '../api';
+import { saveSessionToHistory } from '../sessionHistory';
 
 /**
  * Diagnose page — the core FIY experience.
@@ -15,6 +17,7 @@ import * as api from '../api';
  * API ties everything together on the backend.
  */
 export default function Diagnose() {
+  const navigate = useNavigate();
   const [phase, setPhase] = useState('upload');
   const [loading, setLoading] = useState(false);
   const [loadingLabel, setLoadingLabel] = useState('');
@@ -44,7 +47,11 @@ export default function Diagnose() {
     setSessionData(data);
     const state = data.state || '';
     if (state === 'complete') {
-      setPhase('result');
+      // Save to history and redirect to persistent results page
+      const sid = data.session_id || sessionId;
+      saveSessionToHistory(sid, data.product?.name, data.product?.brand);
+      navigate(`/results/${sid}`);
+      return;
     } else if (state === 'interviewing') {
       setPhase('interview');
     } else if (data.needs_manual_entry) {
@@ -52,9 +59,12 @@ export default function Diagnose() {
     } else if (state === 'identified') {
       setPhase('identify');
     } else {
-      // Fallback: if there's a recommendation, show result
+      // Fallback: if there's a recommendation, redirect to results
       if (data.recommendation) {
-        setPhase('result');
+        const sid = data.session_id || sessionId;
+        saveSessionToHistory(sid, data.product?.name, data.product?.brand);
+        navigate(`/results/${sid}`);
+        return;
       }
     }
   }
@@ -804,9 +814,7 @@ function ResultPhase({ data, sessionId, onVerify }) {
             {fix.steps && (
               <div>
                 <p className="text-sm font-medium text-gray-700 mb-2">Step-by-step instructions</p>
-                <div className="text-sm text-gray-600 prose prose-sm max-w-none whitespace-pre-line">
-                  {fix.steps}
-                </div>
+                <StepList steps={fix.steps} />
               </div>
             )}
           </div>
@@ -1167,6 +1175,40 @@ function VerifyPhase({ onStartOver }) {
         Diagnose another device
       </button>
     </div>
+  );
+}
+
+
+// ─── Step List Component ──────────────────────────────────────────────────────
+
+function StepList({ steps }) {
+  if (!steps) return null;
+  const stepArray = Array.isArray(steps)
+    ? steps
+    : steps.split(/\n/).filter(s => s.trim());
+
+  // If we still have one big blob, try splitting on numbered patterns
+  if (stepArray.length === 1 && stepArray[0].length > 100) {
+    const reSplit = stepArray[0].split(/(?=\d+\.\s)/).filter(s => s.trim());
+    if (reSplit.length > 1) {
+      return <StepListInner steps={reSplit} />;
+    }
+  }
+  return <StepListInner steps={stepArray} />;
+}
+
+function StepListInner({ steps }) {
+  return (
+    <ol className="space-y-3 text-sm text-gray-600">
+      {steps.map((step, i) => (
+        <li key={i} className="flex gap-3 leading-relaxed">
+          <span className="flex-shrink-0 w-6 h-6 rounded-full bg-teal-100 text-teal-700 text-xs font-bold flex items-center justify-center mt-0.5">
+            {i + 1}
+          </span>
+          <span>{step.replace(/^\d+\.\s*/, '')}</span>
+        </li>
+      ))}
+    </ol>
   );
 }
 

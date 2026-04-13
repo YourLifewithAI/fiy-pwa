@@ -112,6 +112,37 @@ export async function askFollowUp(sessionId, question, imageBase64 = null, media
 }
 
 /**
+ * Retrieve a completed session (active or expired).
+ * Works even after the 30-min in-memory TTL — loads from database.
+ * @param {string} sessionId
+ * @returns {Promise<Object>} Full session data with recommendation
+ */
+export async function getSession(sessionId) {
+  return request(`/sessions/${sessionId}`, { method: 'GET' });
+}
+
+/**
+ * Submit verification against any session (active or expired).
+ * @param {string} sessionId
+ * @param {string} outcome
+ * @param {Object} feedback
+ * @returns {Promise<Object>}
+ */
+export async function verifySession(sessionId, outcome, feedback = {}) {
+  const body = {
+    outcome,
+    notes: feedback.notes || undefined,
+    instruction_quality: feedback.instruction_quality || undefined,
+    feedback_text: feedback.feedback_text || undefined,
+    actual_problem: feedback.actual_problem || undefined,
+  };
+  return request(`/sessions/${sessionId}/verify`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+/**
  * Health check.
  * @returns {Promise<Object>}
  */

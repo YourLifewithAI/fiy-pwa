@@ -1,6 +1,9 @@
 import { Link } from 'react-router-dom';
+import { getSessionHistory } from '../sessionHistory';
 
 export default function Home() {
+  const history = getSessionHistory();
+
   return (
     <div className="flex flex-col items-center text-center pt-8 pb-12">
       {/* Hero */}
@@ -59,6 +62,37 @@ export default function Home() {
         </div>
       </div>
 
+      {/* Recent diagnoses */}
+      {history.length > 0 && (
+        <div className="mt-12 w-full max-w-lg">
+          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">
+            Recent diagnoses
+          </h2>
+          <div className="space-y-2 text-left">
+            {history.slice(0, 5).map((entry) => (
+              <Link
+                key={entry.sessionId}
+                to={`/results/${entry.sessionId}`}
+                className="flex items-center justify-between p-3 bg-white rounded-lg border border-gray-200 hover:border-teal-300 hover:bg-teal-50 transition-colors"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-gray-900 truncate">
+                    {entry.brand && <span className="text-gray-500">{entry.brand} </span>}
+                    {entry.productName}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    {formatRelativeTime(entry.timestamp)}
+                  </p>
+                </div>
+                <svg className="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                </svg>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Trust signals */}
       <div className="mt-16 grid grid-cols-3 gap-4 w-full max-w-lg">
         <TrustSignal
@@ -111,4 +145,16 @@ function TrustSignal({ icon, label }) {
       <span className="text-xs font-medium">{label}</span>
     </div>
   );
+}
+
+function formatRelativeTime(timestamp) {
+  const seconds = Math.floor((Date.now() - timestamp) / 1000);
+  if (seconds < 60) return 'Just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(timestamp).toLocaleDateString();
 }
